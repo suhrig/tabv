@@ -1,0 +1,315 @@
+#!/bin/bash
+
+# Author: Sebastian Uhrig
+# Date: 2023-11-19
+#
+# This script aligns column-based text files (TSV/CSV) and presents them in a Vim-based pager.
+
+# make sure Unicode characters are displayed properly in vim
+export LANGUAGE=en_US:en
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
+TABSTOP=10 # 1 tab = 10 blanks
+MARK=" " # a non-breaking space to mark the beginning of a column in vim
+
+# parse command-line options
+while getopts ":d:t:q" OPTION; do
+	case $OPTION in
+		d)
+			DELIMITER="$OPTARG"
+			if ! [[ $DELIMITER =~ ^.$ ]]; then
+				echo "ERROR: invalid field delimiter for -$OPTION: $DELIMITER"
+				exit 1
+			fi
+		;;
+		t)
+			TRUNCATE_COLUMN="$OPTARG"
+			if ! [[ $TRUNCATE_COLUMN =~ ^[1-9][0-9]*$ ]]; then
+				echo "ERROR: invalid number for -$OPTION: $TRUNCATE_COLUMN"
+				exit 1
+			fi
+		;;
+		q)
+			IGNORE_QUOTES=1
+		;;
+		:)
+			echo "ERROR: missing argument for -$OPTARG"
+			exit 1
+			;;
+		*)
+			echo "Usage: $0 [-d DELIMITER] [-t TRUNCATE_COLUMN] [-q] [FILE]"$'\n'
+			echo "    -d field delimiter [detect from file extension]"
+			echo "    -t truncate columns longer than this many characters [unlimited]"
+			echo "    -q disable auto-detection of double-quoted columns"
+			exit 1
+		;;
+	esac
+done >&2
+
+FILENAME="${@:$OPTIND:1}"
+[ -n "$FILENAME" -a ! -e "$FILENAME" ] && echo "ERROR: file not found: $FILENAME" >&2 && exit 1
+[ -z "$FILENAME" -a -t 0 ] && echo "ERROR: missing input file" >&2 && exit 1
+SANITIZED_FILENAME=$(sed 's|[^-_()\[\]/.:;+=",0-9A-Za-z]| |g' <<<"${FILENAME:--stdin-}")
+
+# assume comma as delimiter for .csv files, tabs in all other cases
+if [ -z "$DELIMITER" ]; then
+	if [[ $FILENAME =~ \.csv($|\.bz2$|\.gz$) ]]; then
+		DELIMITER=","
+	else
+		DELIMITER=$'\t'
+	fi
+fi
+
+# decompress file if needed
+(
+if [ -z "$FILENAME" ]; then
+	cat /dev/stdin
+elif [[ $FILENAME =~ \.gz$ ]]; then
+	gunzip -cd "$FILENAME"
+elif [[ $FILENAME =~ \.bz2$ ]]; then
+	bunzip2 -cd "$FILENAME"
+else
+	cat "$FILENAME"
+fi |
+LANG=C awk -v DELIMITER="$DELIMITER" -v IGNORE_QUOTES="$IGNORE_QUOTES" '
+	# remove Unicode BOM
+	NR==1 { sub("^\xEF\xBB\xBF|^\x00\x00\xFE\xFF|^\xFF\xFE\x00\x00|^\xFE\xFF|^\xFF\xFE", "") }
+	# convert DOS line breaks to UNIX
+	{ sub("\r$", "") }
+	# handle quotes
+	{ if (IGNORE_QUOTES=="" && /^"/ && /"$/) gsub("\"" DELIMITER "\"", "\"\x1D\""); else gsub(DELIMITER, "\x1D") }
+	# remove remaining tabs, since they would screw up the column alignment
+	{ gsub("\t", " "); print }
+'
+echo "${MARK}END-OF-FILE${MARK}" # indicate to awk that loading has not been interrupted
+) |
+
+cat | # this process is killed when user hits ENTER, terminating loading
+
+# format input as table
+awk -v FS=$'\x1D' -v OFS=$'\x1D' -v ORS="" -v MARK="$MARK" -v TRUNCATE_COLUMN="$TRUNCATE_COLUMN" -v TABSTOP="$TABSTOP" '
+{
+	# check if loading has been interrupted
+	if ($0 == MARK "END-OF-FILE" MARK) {
+		file_not_truncated = 1
+		next
+	}
+
+	# find header line
+	if (!past_header) {
+		if (/^#/) {
+			previous_NF = NF
+			header_lines = header_lines " " MARK $0 "\n"
+			line_count = 0
+			delete max_column_length
+			delete lines
+		} else {
+			if (NF == previous_NF) {
+				sub(/[^\n]*\n$/, "", header_lines)
+			} else {
+				line_count = 0
+				delete max_column_length
+				delete lines
+			}
+			past_header = 1
+		}
+	}
+
+	# truncate long columns
+	if (TRUNCATE_COLUMN)
+		for (column = 1; column <= NF; ++column)
+			$column = substr($column, 1, TRUNCATE_COLUMN)
+
+	# determine max length of each column
+	column_number_placeholder = " "
+	for (column = 1; column <= NF; ++column) {
+		if ($column == "") $column = " "
+		column_length = length($column) + 1 + length(column_number_placeholder)
+		if (max_column_length[column] < column_length) max_column_length[column] = column_length
+		column_number_placeholder = (column + 1) ""
+	}
+
+	# cache file content
+	lines[++line_count] = $0
+
+	# show progress of loading
+	total_bytes += length($0)
+	if (FNR == progress_interval+1) {
+		print "Read " FNR " lines (approx. " int(total_bytes/100000) " MB of formatted text). Press ENTER to stop here.\r" > "/dev/stderr"
+		progress_interval = int(FNR*1.03)
+	}
+
+}
+END {
+	print header_lines
+	print MARK "END-OF-HEADER" MARK "\n"
+
+	for (line = 1; line <= line_count; ++line) {
+
+		if (int(line/line_count*100+0.5) != int((line-1)/line_count*100+0.5))
+			print "Formatting table (" int(line/line_count*100+0.5) "%)                                                                      \r" > "/dev/stderr"
+
+		# insert tabs between columns to align them
+		split(lines[line], columns, FS)
+		column_number_placeholder = " "
+		print column_number_placeholder MARK
+		for (column = 1; column <= length(columns); ++column) {
+			print columns[column]
+			column_length = length(columns[column]) + 1 + length(column_number_placeholder)
+			column_end = (int(max_column_length[column] / TABSTOP) + 1) * TABSTOP
+			for (tab = int(column_length / TABSTOP) * TABSTOP; tab < column_end; tab += TABSTOP)
+				print "\t"
+			column_number_placeholder = (column + 1) ""
+			gsub(".", " ", column_number_placeholder)
+			print column_number_placeholder MARK
+		}
+		print "\n"
+	}
+
+	if (!file_not_truncated)
+		print "  truncated ...\n"
+
+	# stop listening for ENTER key stroke to interrupt loading
+	system("pkill -P '$$' -f tabv_" "stop_reading")
+}' |
+
+vim - -n -u NONE -R -c "let g:SANITIZED_FILENAME='$SANITIZED_FILENAME' | let &tabstop=$TABSTOP" -S <(echo '
+
+	set number
+	set nocompatible
+	set noswapfile
+	set hlsearch
+	set nowrap
+	set noro
+
+	" redefine keys to make vim behave like a pager
+	function ScrollUp(numLines)
+		" prevent scrolling into header line
+		if line("w0") - a:numLines <= g:headerLine
+			call feedkeys((g:headerLine + 1) . "zt")
+		else
+			call feedkeys(a:numLines . "\<C-Y>")
+		endif
+	endfunction
+	nmap <Left> zH
+	nmap <Right> zL
+	nmap <silent> <Up> :call ScrollUp(1)<CR>
+	nmap <Down> <C-E>
+	nmap <Space> 20<C-E>
+	nmap <PageDown> 20<C-E>
+	nmap <silent> <PageUp> :call ScrollUp(20)<CR>
+	nmap <silent> t :call ScrollUp(line("w0"))<CR>
+	nmap r $
+	nmap b G
+	nmap l <Home>
+	nmap p N
+	nnoremap <silent> [1;3C :set nowrapscan<CR>/\%<C-R>=line(".")<CR>l'$MARK'<CR><Right>:set wrapscan<CR>:noh<CR>
+	nnoremap <silent> [1;3D :set nowrapscan<CR><Left>?\%<C-R>=line(".")<CR>l'$MARK'<CR><Right>:set wrapscan<CR>:noh<CR>
+	nmap <silent> f [1;3C
+	nmap <silent> b [1;3D
+	nmap <silent> <Esc><Right> [1;3C
+	nmap <silent> <Esc><Left> [1;3D
+	nmap <silent> <Tab> [1;3C
+	nmap <silent> <S-Tab> [1;3D
+	nmap <silent> q :qa!<CR>
+	nmap <silent> Q :qa!<CR>
+	nmap i :echo<CR>
+	nmap I :echo<CR>
+	nmap a :echo<CR>
+	nmap A :echo<CR>
+	nmap v :echo<CR>
+	nmap V :echo<CR>
+	nmap o :echo<CR>
+	nmap O :echo<CR>
+
+	" function to drop column under cursor
+	function DropColumn()
+		echo "Dropping column under cursor, please wait ..."
+		let savePos = getpos(".")
+                let onlyMarks = substitute(substitute(getline(".")[0:savePos[2]], "[^'$MARK']*", "", "g"), "'$MARK'$", "", "")
+                silent! execute "%s/\\(^" . substitute(onlyMarks, "'$MARK'", "[ 0-9]\\\\+'$MARK'[^'$MARK']*\\\\t\\\\+", "g") . "\\)[ 0-9]\\+'$MARK'[^'$MARK']*\\t\\+/\\1/"
+		call setpos(".",savePos)
+		if char2nr(getline(".")[col(".")-1]) == char2nr("'$MARK'") | let savePos[2] = savePos[2] + 1 | call setpos(".",savePos) | endif
+		noh
+		echo " "
+	endfunction
+	nmap <silent> <Del> :call DropColumn()<CR><CR>
+	nmap <silent> <BS> <Del>
+
+	" toggle header line
+	call search("'$MARK'END-OF-HEADER'$MARK'")
+	call feedkeys("ddzt")
+	let g:headerLine = 0
+	function ToggleHeader()
+		if g:headerLine > 0
+			let topVisibleLine = line("w0")
+			wincmd k
+			:q!
+			silent! execute g:headerLine . "s/[0-9][0-9][0-9][0-9][0-9]'$MARK'/     '$MARK'/g"
+			silent! execute g:headerLine . "s/[0-9][0-9][0-9][0-9]'$MARK'/    '$MARK'/g"
+			silent! execute g:headerLine . "s/[0-9][0-9][0-9]'$MARK'/   '$MARK'/g"
+			silent! execute g:headerLine . "s/[0-9][0-9]'$MARK'/  '$MARK'/g"
+			silent! execute g:headerLine . "s/[0-9]'$MARK'/ '$MARK'/g"
+			let g:headerLine = 0
+			call feedkeys((topVisibleLine - 1) . "zt")
+		else
+			" make a new window at the top of the screen with just one line showing the header
+			let g:headerLine = line("w0")
+			if getline(".") =~ "'$MARK'"
+				" enumerate column headers
+				call cursor(g:headerLine, 1)
+				let columns = split(getline("."), "'$MARK'")
+				let columns[0] = "1'$MARK'"
+				if len(columns) > 1 | let columns[1] = substitute(columns[1], " \\+$", "", "") | endif
+				let tabNum = 2
+				while tabNum < len(columns)
+					let columns[tabNum] = tabNum . "'$MARK'" . substitute(columns[tabNum], " \\+$", "", "")
+					let tabNum = tabNum + 1
+				endwhile
+				call setline(".", join(columns, "") . " '$MARK'")
+			endif
+
+			set laststatus=2 " always show status bar
+			set scrollbind " make sure windows scroll in sync
+			set scrollopt=hor " make sure windows scroll in sync
+			above split " split window horizontally showing the same content in both windows
+			resize 1 " make top window just 1 line high
+			let &l:statusline = "HOTKEYS: %#hotKey#q%*=quit, %#hotKey#←%*/%#hotKey#↑%*/%#hotKey#→%*/%#hotKey#↓%*/%#hotKey#<PgUp>%*/%#hotKey#<PgDn>%*=navigate, %#hotKey#<Tab>%*/%#hotKey#<Shift>%*+%#hotKey#<Tab>%*=next/previous column, %#hotKey#t%*/%#hotKey#b%*/%#hotKey#l%*/%#hotKey#r%*=top/bottom/left/right, %#hotKey#/%*regex=search regex, %#hotKey#n%*/%#hotKey#p%*=next/previous hit, %#hotKey#<Del>%*=drop column, %#hotKey#h%*=toggle header"
+			call cursor(g:headerLine, 1) " go to header line in top window
+			call feedkeys(":wincmd j\<CR>") | wincmd j " go to bottom window (strangely needs to be called with two different methods)
+			call feedkeys((g:headerLine + 1) . "zt") " go to header line +1 in bottom window
+			call feedkeys(":\<BS>") " hack to clear the info line
+			if (getline("$") == "  truncated ...") | let file_truncated = " (truncated)" | else | let file_truncated = "" | endif
+			let &l:statusline = g:SANITIZED_FILENAME . "%=lines: %L" . file_truncated . ", position: %P"
+
+		endif
+		" mark rows in alternating colors, excluding header
+		syn clear
+		syntax match oddLine "^.*$" nextgroup=evenLine skipnl contains=ALL
+		syntax match evenLine "^.*$" nextgroup=oddLine skipnl contains=ALL
+		execute "syntax match headLine '"'"'\\%" . g:headerLine . "l.*'"'"' contains=ALL"
+		execute "syntax match columnNumber '"'"'\\%" . g:headerLine . "l[0-9]\\+'$MARK"'"'"
+		execute "syntax match truncatedLine '"'"'\\%" . line("$") . "l^  truncated \\.\\.\\.$'"'"'"
+	endfunction
+	nmap <silent> h :call ToggleHeader()<CR>
+	call feedkeys("h")
+
+	" alternating row colors
+	syntax sync minlines=1
+	syntax sync maxlines=1
+	highlight oddLine ctermbg=7 ctermfg=0
+	highlight evenLine ctermbg=6 ctermfg=0
+	highlight headLine ctermbg=NONE ctermfg=NONE
+	highlight columnNumber ctermbg=NONE ctermfg=40
+	highlight hotKey cterm=reverse ctermbg=9
+	highlight truncatedLine ctermbg=NONE ctermfg=NONE
+	set synmaxcol=0
+
+') &
+
+# listen for ENTER key stroke to abort loading
+bash -c 'read tabv_stop_reading' < /dev/tty
+pkill -P $$ cat
+wait
+
