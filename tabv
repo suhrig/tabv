@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Author: Sebastian Uhrig
-# Date: 2023-11-19
+# Date: 2024-03-06
 #
 # This script aligns column-based text files (TSV/CSV) and presents them in a Vim-based pager.
 
@@ -182,6 +182,7 @@ vim - -n -u NONE -R -c "let g:SANITIZED_FILENAME='$SANITIZED_FILENAME' | let &ta
 	set hlsearch
 	set nowrap
 	set noro
+	set lazyredraw
 
 	" redefine keys to make vim behave like a pager
 	function ScrollUp(numLines)
@@ -286,11 +287,11 @@ vim - -n -u NONE -R -c "let g:SANITIZED_FILENAME='$SANITIZED_FILENAME' | let &ta
 		endif
 		" mark rows in alternating colors, excluding header
 		syn clear
-		syntax match oddLine "^.*$" nextgroup=evenLine skipnl contains=ALL
-		syntax match evenLine "^.*$" nextgroup=oddLine skipnl contains=ALL
-		execute "syntax match headLine '"'"'\\%" . g:headerLine . "l.*'"'"' contains=ALL"
+		syntax match oddLine display "^.*$" nextgroup=evenLine skipnl contains=ALL
+		syntax match evenLine display "^.*$" nextgroup=oddLine skipnl contains=ALL
+		execute "syntax match headLine display '"'"'\\%" . g:headerLine . "l^.*$'"'"' contains=ALL"
 		execute "syntax match columnNumber '"'"'\\%" . g:headerLine . "l[0-9]\\+'$MARK"'"'"
-		execute "syntax match truncatedLine '"'"'\\%" . line("$") . "l^  truncated \\.\\.\\.$'"'"'"
+		execute "syntax match truncatedLine display '"'"'\\%" . line("$") . "l^  truncated \\.\\.\\.$'"'"'"
 	endfunction
 	nmap <silent> h :call ToggleHeader()<CR>
 	call feedkeys("h")
