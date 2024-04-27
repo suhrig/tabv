@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Author: Sebastian Uhrig
-# Date: 2024-03-06
+# Date: 2024-04-18
 #
 # This script aligns column-based text files (TSV/CSV) and presents them in a Vim-based pager.
 
@@ -125,7 +125,7 @@ awk -v FS=$'\x1D' -v OFS=$'\x1D' -v ORS="" -v MARK="$MARK" -v TRUNCATE_COLUMN="$
 	column_number_placeholder = " "
 	for (column = 1; column <= NF; ++column) {
 		if ($column == "") $column = " "
-		column_length = length($column) + 1 + length(column_number_placeholder)
+		column_length = length($column) + 2 + length(column_number_placeholder)
 		if (max_column_length[column] < column_length) max_column_length[column] = column_length
 		column_number_placeholder = (column + 1) ""
 	}
@@ -153,16 +153,16 @@ END {
 		# insert tabs between columns to align them
 		split(lines[line], columns, FS)
 		column_number_placeholder = " "
-		print column_number_placeholder MARK
+		print column_number_placeholder " " MARK
 		for (column = 1; column <= length(columns); ++column) {
 			print columns[column]
-			column_length = length(columns[column]) + 1 + length(column_number_placeholder)
+			column_length = length(columns[column]) + 2 + length(column_number_placeholder)
 			column_end = (int(max_column_length[column] / TABSTOP) + 1) * TABSTOP
 			for (tab = int(column_length / TABSTOP) * TABSTOP; tab < column_end; tab += TABSTOP)
 				print "\t"
 			column_number_placeholder = (column + 1) ""
 			gsub(".", " ", column_number_placeholder)
-			print column_number_placeholder MARK
+			print column_number_placeholder " " MARK
 		}
 		print "\n"
 	}
@@ -183,6 +183,8 @@ vim - -n -u NONE -R -c "let g:SANITIZED_FILENAME='$SANITIZED_FILENAME' | let &ta
 	set nowrap
 	set noro
 	set lazyredraw
+	set conceallevel=3
+	set concealcursor=n
 
 	" redefine keys to make vim behave like a pager
 	function ScrollUp(numLines)
@@ -247,11 +249,11 @@ vim - -n -u NONE -R -c "let g:SANITIZED_FILENAME='$SANITIZED_FILENAME' | let &ta
 			let topVisibleLine = line("w0")
 			wincmd k
 			:q!
-			silent! execute g:headerLine . "s/[0-9][0-9][0-9][0-9][0-9]'$MARK'/     '$MARK'/g"
-			silent! execute g:headerLine . "s/[0-9][0-9][0-9][0-9]'$MARK'/    '$MARK'/g"
-			silent! execute g:headerLine . "s/[0-9][0-9][0-9]'$MARK'/   '$MARK'/g"
-			silent! execute g:headerLine . "s/[0-9][0-9]'$MARK'/  '$MARK'/g"
-			silent! execute g:headerLine . "s/[0-9]'$MARK'/ '$MARK'/g"
+			silent! execute g:headerLine . "s/[0-9][0-9][0-9][0-9][0-9] '$MARK'/      '$MARK'/g"
+			silent! execute g:headerLine . "s/[0-9][0-9][0-9][0-9] '$MARK'/     '$MARK'/g"
+			silent! execute g:headerLine . "s/[0-9][0-9][0-9] '$MARK'/    '$MARK'/g"
+			silent! execute g:headerLine . "s/[0-9][0-9] '$MARK'/   '$MARK'/g"
+			silent! execute g:headerLine . "s/[0-9] '$MARK'/  '$MARK'/g"
 			let g:headerLine = 0
 			call feedkeys((topVisibleLine - 1) . "zt")
 		else
@@ -261,11 +263,11 @@ vim - -n -u NONE -R -c "let g:SANITIZED_FILENAME='$SANITIZED_FILENAME' | let &ta
 				" enumerate column headers
 				call cursor(g:headerLine, 1)
 				let columns = split(getline("."), "'$MARK'")
-				let columns[0] = "1'$MARK'"
+				let columns[0] = "1 '$MARK'"
 				if len(columns) > 1 | let columns[1] = substitute(columns[1], " \\+$", "", "") | endif
 				let tabNum = 2
 				while tabNum < len(columns)
-					let columns[tabNum] = tabNum . "'$MARK'" . substitute(columns[tabNum], " \\+$", "", "")
+					let columns[tabNum] = tabNum . " '$MARK'" . substitute(columns[tabNum], " \\+$", "", "")
 					let tabNum = tabNum + 1
 				endwhile
 				call setline(".", join(columns, "") . " '$MARK'")
@@ -289,9 +291,9 @@ vim - -n -u NONE -R -c "let g:SANITIZED_FILENAME='$SANITIZED_FILENAME' | let &ta
 		syn clear
 		syntax match oddLine display "^.*$" nextgroup=evenLine skipnl contains=ALL
 		syntax match evenLine display "^.*$" nextgroup=oddLine skipnl contains=ALL
-		execute "syntax match headLine display '"'"'\\%" . g:headerLine . "l^.*$'"'"' contains=ALL"
-		execute "syntax match columnNumber '"'"'\\%" . g:headerLine . "l[0-9]\\+'$MARK"'"'"
+		execute "syntax match columnNumber display '"'"'\\%" . g:headerLine . "l[0-9]\\+ '$MARK"'"' contains=hideMark"
 		execute "syntax match truncatedLine display '"'"'\\%" . line("$") . "l^  truncated \\.\\.\\.$'"'"'"
+		syntax match hideMark display "'$MARK'" conceal
 	endfunction
 	nmap <silent> h :call ToggleHeader()<CR>
 	call feedkeys("h")
@@ -301,7 +303,6 @@ vim - -n -u NONE -R -c "let g:SANITIZED_FILENAME='$SANITIZED_FILENAME' | let &ta
 	syntax sync maxlines=1
 	highlight oddLine ctermbg=7 ctermfg=0
 	highlight evenLine ctermbg=6 ctermfg=0
-	highlight headLine ctermbg=NONE ctermfg=NONE
 	highlight columnNumber ctermbg=NONE ctermfg=40
 	highlight hotKey cterm=reverse ctermbg=9
 	highlight truncatedLine ctermbg=NONE ctermfg=NONE
