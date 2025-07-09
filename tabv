@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Author: Sebastian Uhrig
-# Date: 2024-04-18
+# Date: 2025-07-09
 #
 # This script aligns column-based text files (TSV/CSV) and presents them in a Vim-based pager.
 
@@ -18,7 +18,7 @@ while getopts ":d:t:q" OPTION; do
 	case $OPTION in
 		d)
 			DELIMITER="$OPTARG"
-			if ! [[ $DELIMITER =~ ^.$ ]]; then
+			if [ -z "$DELIMITER" ]; then
 				echo "ERROR: invalid field delimiter for -$OPTION: $DELIMITER"
 				exit 1
 			fi
