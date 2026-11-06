@@ -78,7 +78,16 @@ LANG=C awk -v DELIMITER="$DELIMITER" -v IGNORE_QUOTES="$IGNORE_QUOTES" '
 	# convert DOS line breaks to UNIX
 	{ sub("\r$", "") }
 	# handle quotes
-	{ if (IGNORE_QUOTES=="" && /^"/ && /"$/) gsub("\"" DELIMITER "\"", "\"\x1D\""); else gsub(DELIMITER, "\x1D") }
+	{ if (IGNORE_QUOTES=="") {
+		result=""; in_quotes=0; remaining=$0
+		while (remaining!="") {
+			quote_pos=index(remaining,"\""); delim_pos=in_quotes?0:index(remaining,DELIMITER)
+			if (quote_pos && (!delim_pos || quote_pos<delim_pos)) { result=result substr(remaining,1,quote_pos); remaining=substr(remaining,quote_pos+1); in_quotes=!in_quotes }
+			else if (delim_pos) { result=result substr(remaining,1,delim_pos-1) "\x1D"; remaining=substr(remaining,delim_pos+length(DELIMITER)) }
+			else { result=result remaining; remaining="" }
+		}
+		$0=result
+	  } else gsub(DELIMITER, "\x1D") }
 	# remove remaining tabs, since they would screw up the column alignment
 	{ gsub("\t", " "); print }
 '

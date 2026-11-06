@@ -56,4 +56,3 @@ Known Issues
 - slow with big files
 - high memory consumption with big files, since the entire content is held in memory
 - non-ASCII characters can break the alignment
-- auto-detection of double-quoted columns only works if all columns are wrapped in quotes
